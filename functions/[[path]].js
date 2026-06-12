@@ -425,6 +425,17 @@ function isSameSubmitter(order, submitterId, submitterName) {
   return false;
 }
 
+function orderMatchesExpected(order, expected = {}) {
+  const keys = ["model", "customer", "submitter_id", "submit_time"];
+  for (const key of keys) {
+    const expectedValue = String(expected[key] || "").trim();
+    if (expectedValue && String(order[key] || "").trim() !== expectedValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function resolveSubmitterName(submitterId, submitterName = "") {
   const name = String(submitterName || "").trim();
   if (name && name !== "用户") return name;
@@ -819,19 +830,25 @@ async function apiDeleteOrder(request, url, rowIndexFromPath = 0) {
     if (!original) {
       return jsonResponse({ success: false, error: "订单不存在" });
     }
+    const expectedOrder = data.order || data;
+    if (!orderMatchesExpected(original, expectedOrder)) {
+      return jsonResponse({ success: false, error: "订单行号已变化，请刷新后重试，未执行删除" });
+    }
     if (!isAdmin && !isSameSubmitter(original, submitterId, submitterName)) {
       return jsonResponse({ success: false, error: "无权删除他人订单" }, 403);
     }
 
-    const startIndex = rowIndex - 1;
+    const emptyValues = Array.from({ length: 12 }, () => buildCellValue(""));
 
     const body = {
       requests: [{
-        deleteDimensionRequest: {
+        updateRangeRequest: {
           sheetId: SHEET_ID,
-          dimension: "ROW",
-          startIndex,
-          endIndex: startIndex + 1
+          gridData: {
+            startRow: rowIndex - 1,
+            startColumn: 0,
+            rows: [{ values: emptyValues }]
+          }
         }
       }]
     };

@@ -4,6 +4,7 @@ const BASE_URL = "https://docs.qq.com/openapi/spreadsheet/v3";
 const FILE_ID = "DRnhDemRIS25mdnFF";
 const SHEET_ID = "000007";
 const MODEL_SHEET_ID = "000002";
+const USER_SHEET_ID = "s9osf8";
 
 const TENCENT_HEADERS = {
   "Content-Type": "application/json",
@@ -43,14 +44,44 @@ const MODEL_CONFIG = {
 
 let cache = {};
 const CACHE_TTL = 60;
+const USER_CACHE_TTL = 120;
+const MODEL_CACHE_TTL = 300;
+const ORDER_CACHE_TTL = 45;
+const PENDING_CACHE_TTL = 30;
+
+let usersCache = { data: null, time: 0 };
+let modelsCache = { data: null, time: 0 };
+let ordersCache = { data: null, time: 0 };
+let pendingRowsCache = { data: null, time: 0 };
+
+function isCacheValid(entry, ttlSeconds) {
+  return entry.data !== null && (Date.now() / 1000 - entry.time) < ttlSeconds;
+}
+
+function clearOrderCaches() {
+  ordersCache = { data: null, time: 0 };
+  pendingRowsCache = { data: null, time: 0 };
+}
+
+function clearUserCaches() {
+  usersCache = { data: null, time: 0 };
+}
 
 function parseCellValue(cellValue) {
   if (!cellValue) return "";
   if (cellValue.text !== undefined) return cellValue.text;
   if (cellValue.number !== undefined) return String(cellValue.number);
+  if (cellValue.formattedText !== undefined) return String(cellValue.formattedText);
+  if (cellValue.stringValue !== undefined) return String(cellValue.stringValue);
+  if (cellValue.value !== undefined && typeof cellValue.value !== "object") return String(cellValue.value);
   if (cellValue.time) {
     const t = cellValue.time;
     return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+  }
+  if (cellValue.select?.value?.length) return String(cellValue.select.value[0]);
+  if (cellValue.link) return String(cellValue.link.text || cellValue.link.url || "");
+  if (Array.isArray(cellValue.richText)) {
+    return cellValue.richText.map(item => item.text || item.value || "").join("");
   }
   return "";
 }
@@ -198,6 +229,10 @@ async function calculateDeliveryDate(model, tonnageStr, expectedDateStr) {
 }
 
 async function getNextEmptyRow() {
+  if (isCacheValid(pendingRowsCache, PENDING_CACHE_TTL)) {
+    return pendingRowsCache.data;
+  }
+
   const batchSize = 200;
   for (let offset = 0; offset < 2000; offset += batchSize) {
     const start = offset + 1;
@@ -220,14 +255,18 @@ async function getNextEmptyRow() {
           }
         }
       }
-      if (!hasData) return actualRow;
+      if (!hasData) {
+        pendingRowsCache = { data: actualRow, time: Date.now() / 1000 };
+        return actualRow;
+      }
     }
   }
+  pendingRowsCache = { data: 2001, time: Date.now() / 1000 };
   return 2001;
 }
 
 async function batchUpdate(body) {
-  const url = `${BASE_URL}/files/${FILE_ID}/sheets/${SHEET_ID}/batchUpdate`;
+  const url = `${BASE_URL}/files/${FILE_ID}/batchUpdate`;
   const resp = await fetch(url, {
     method: "POST",
     headers: TENCENT_HEADERS,
@@ -257,8 +296,15 @@ function buildCellValue(value, isDate = false, isNumber = false) {
   } else {
     cell = { cellValue: { text: String(value) } };
   }
-  cell.textFormat = { fontSize: 14 };
+  const textFormat = { fontSize: 14, font: "SimSun" };
+  cell.cellFormat = { textFormat };
+  cell.textFormat = textFormat;
   return cell;
+}
+
+function getBeijingTimeString() {
+  const beijingTime = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return beijingTime.toISOString().replace('T', ' ').slice(0, 19);
 }
 
 async function writeOrderRow(rowIndex0Based, model, tonnage, customer, expectedDate, calculatedDate, queueDate, submitter, remark, serialNo, submitterId, submitTime) {
@@ -306,22 +352,135 @@ async function writeOrderRow(rowIndex0Based, model, tonnage, customer, expectedD
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0"
+    }
   });
+}
+
+async function readUsers() {
+  if (isCacheValid(usersCache, USER_CACHE_TTL)) {
+    return usersCache.data;
+  }
+
+  const url = `${BASE_URL}/files/${FILE_ID}/${USER_SHEET_ID}/A2:D200`;
+  const resp = await fetch(url, {
+    headers: TENCENT_HEADERS,
+    cf: { cacheTtl: 0, cacheEverything: false }
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`读取用户表失败: ${resp.status} ${text.slice(0, 120)}`);
+  }
+
+  const data = await resp.json();
+  const rows = data.gridData?.rows || data.gridData?.[0]?.rows || data.rows || [];
+  const users = [];
+  for (const row of rows) {
+    const values = row.values || [];
+    const name = parseCellValue(values[0]?.cellValue || values[0]);
+    const employeeId = parseCellValue(values[1]?.cellValue || values[1]);
+    const password = parseCellValue(values[2]?.cellValue || values[2]);
+    const adminText = parseCellValue(values[3]?.cellValue || values[3]);
+    if (name && employeeId) {
+      users.push({
+        name,
+        employee_id: employeeId,
+        password,
+        is_admin: adminText === "管理员" || adminText === "是"
+      });
+    }
+  }
+  if (users.length === 0) {
+    throw new Error(`用户表为空或未读取到员工姓名/员工号，返回行数: ${rows.length}`);
+  }
+  usersCache = { data: users, time: Date.now() / 1000 };
+  return users;
+}
+
+async function isUserAdmin(employeeId) {
+  const users = await readUsers();
+  const user = users.find(u => normalizeUserKey(u.employee_id) === normalizeUserKey(employeeId));
+  return Boolean(user?.is_admin);
+}
+
+function normalizeUserKey(value) {
+  let text = String(value || "").trim();
+  if (text.endsWith(".0")) text = text.slice(0, -2);
+  return text;
+}
+
+function isSameSubmitter(order, submitterId, submitterName) {
+  const currentId = normalizeUserKey(submitterId);
+  const rowId = normalizeUserKey(order.submitter_id);
+  const currentName = String(submitterName || "").trim();
+  const rowName = String(order.submitter || "").trim();
+
+  if (currentId && rowId && currentId === rowId) return true;
+  if (currentName && rowName && currentName === rowName) return true;
+  return false;
+}
+
+async function resolveSubmitterName(submitterId, submitterName = "") {
+  const name = String(submitterName || "").trim();
+  if (name && name !== "用户") return name;
+
+  const currentId = normalizeUserKey(submitterId);
+  if (!currentId) return name;
+  const users = await readUsers();
+  const user = users.find(u => normalizeUserKey(u.employee_id) === currentId);
+  return String(user?.name || name || "").trim();
+}
+
+async function readOrderByRow(rowIndex) {
+  if (!Number.isInteger(rowIndex) || rowIndex < 2) {
+    return null;
+  }
+  const gridData = await readSheetRange(SHEET_ID, `A${rowIndex}:L${rowIndex}`);
+  const rows = gridData.rows || [];
+  if (!rows.length) return null;
+  const values = rows[0].values || [];
+  const getCol = (idx) => {
+    const cv = values[idx]?.cellValue;
+    return cv ? parseCellValue(cv) : "";
+  };
+  const rowData = [];
+  for (let i = 0; i < 12; i++) rowData.push(getCol(i));
+  if (!rowData[0]) return null;
+  return {
+    row_index: rowIndex,
+    model: rowData[0],
+    tonnage: rowData[1],
+    customer: rowData[2],
+    expected_date: rowData[3],
+    calculated_date: rowData[4],
+    queue_date: rowData[5],
+    submitter: rowData[6],
+    remark: rowData[7],
+    serial_no: rowData[8],
+    last_entry: rowData[9],
+    submitter_id: rowData[10],
+    submit_time: rowData[11]
+  };
 }
 
 export async function onRequest(context) {
   const { request, env, next } = context;
   const url = new URL(request.url);
   const method = request.method;
+  const accessPassword = env.ACCESS_PASSWORD || "queue2025";
 
   // CORS
   if (method === "OPTIONS") {
     return new Response("", {
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS, DELETE",
-        "Access-Control-Allow-Headers": "Content-Type, X-Access-Password"
+        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS, DELETE",
+        "Access-Control-Allow-Headers": "Content-Type, X-Access-Password, X-Employee-Id"
       }
     });
   }
@@ -331,10 +490,36 @@ export async function onRequest(context) {
     return await next();
   }
 
+  // 登录相关接口必须在鉴权前处理，否则登录页无法加载员工列表
+  if (url.pathname === "/auth/users" && method === "GET") {
+    return await apiGetAuthUsers();
+  }
+  if (url.pathname === "/auth/login" && method === "POST") {
+    return await apiAuthLogin(request, accessPassword);
+  }
+  if (url.pathname === "/auth/check" && method === "GET") {
+    const auth = request.headers.get("X-Access-Password") || "";
+    return jsonResponse({ authorized: auth === accessPassword });
+  }
+
   // API认证
   const auth = request.headers.get("X-Access-Password") || "";
-  if (auth !== "queue2025") {
+  if (auth !== accessPassword) {
     return jsonResponse({ success: false, error: "未授权" }, 401);
+  }
+
+  const orderMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
+  if (orderMatch) {
+    const rowIndex = parseInt(orderMatch[1], 10);
+    if (method === "GET") {
+      return await apiGetOrder(url, rowIndex);
+    }
+    if (method === "PUT") {
+      return await apiUpdateOrder(request, rowIndex);
+    }
+    if (method === "DELETE") {
+      return await apiDeleteOrder(request, url, rowIndex);
+    }
   }
 
   // API路由
@@ -348,7 +533,7 @@ export async function onRequest(context) {
     return await apiCreateOrder(request);
   }
   if (url.pathname === "/api/orders" && method === "DELETE") {
-    return await apiDeleteOrder(request);
+    return await apiDeleteOrder(request, url, 0);
   }
   if (url.pathname === "/api/calculate-date" && method === "POST") {
     return await apiCalculateDate(request);
@@ -356,15 +541,18 @@ export async function onRequest(context) {
   if (url.pathname === "/api/feedback" && method === "POST") {
     return await apiFeedback(request);
   }
-  if (url.pathname === "/auth/users" && method === "GET") {
-    return await apiGetAuthUsers();
+  if (url.pathname === "/api/users/password" && method === "PUT") {
+    return await apiUpdatePassword(request);
   }
-
   return jsonResponse({ success: false, error: "Not found" }, 404);
 }
 
 async function apiGetModels() {
   try {
+    if (isCacheValid(modelsCache, MODEL_CACHE_TTL)) {
+      return jsonResponse({ success: true, models: modelsCache.data });
+    }
+
     const gridData = await readSheetRange(MODEL_SHEET_ID, "A1:A100");
     const rows = gridData.rows || [];
     const models = [];
@@ -377,65 +565,87 @@ async function apiGetModels() {
         }
       }
     }
+    modelsCache = { data: models, time: Date.now() / 1000 };
     return jsonResponse({ success: true, models });
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }
 }
 
+async function fetchAllOrdersRaw() {
+  if (isCacheValid(ordersCache, ORDER_CACHE_TTL)) {
+    return ordersCache.data;
+  }
+
+  const gridData = await readSheetRange(SHEET_ID, "A2:L2000");
+  const rows = gridData.rows || [];
+  const orders = [];
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  for (let i = 0; i < rows.length; i++) {
+    const values = rows[i].values || [];
+    if (!values.length) continue;
+
+    const getCol = (idx) => {
+      const cv = values[idx]?.cellValue;
+      return cv ? parseCellValue(cv) : "";
+    };
+
+    const rowData = [];
+    for (let j = 0; j < 12; j++) rowData.push(getCol(j));
+    if (!rowData[0]) continue;
+
+    const expectedDateStr = rowData[3];
+    if (expectedDateStr && expectedDateStr < todayStr) continue;
+
+    orders.push({
+      row_index: i + 2,
+      model: rowData[0],
+      tonnage: rowData[1],
+      customer: rowData[2],
+      expected_date: rowData[3],
+      calculated_date: rowData[4],
+      queue_date: rowData[5],
+      submitter: rowData[6],
+      remark: rowData[7],
+      serial_no: rowData[8],
+      last_entry: rowData[9],
+      submitter_id: rowData[10],
+      submit_time: rowData[11]
+    });
+  }
+
+  ordersCache = { data: orders, time: Date.now() / 1000 };
+  return orders;
+}
+
 async function apiGetOrders(url) {
   try {
     const submitterId = url.searchParams.get("submitter_id") || "";
-    const viewMode = url.searchParams.get("view_mode") || "all";
+    let submitterName = url.searchParams.get("submitter_name") || "";
+    const isAdmin = await isUserAdmin(submitterId);
+    const viewMode = url.searchParams.get("view_mode") || (isAdmin ? "all" : "mine");
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
 
-    const gridData = await readSheetRange(SHEET_ID, "A2:L2000");
-    const rows = gridData.rows || [];
+    if (url.searchParams.get("_ts") || url.searchParams.get("refresh") === "1" || viewMode === "mine" || !isAdmin) {
+      clearOrderCaches();
+    }
 
+    submitterName = await resolveSubmitterName(submitterId, submitterName);
+    const allOrders = await fetchAllOrdersRaw();
     const orders = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayStr = today.toISOString().split('T')[0];
 
-    for (let i = 0; i < rows.length; i++) {
-      const values = rows[i].values || [];
-      if (!values.length) continue;
+    for (const order of allOrders) {
 
-      const getCol = (idx) => {
-        if (idx < values.length) {
-          const cv = values[idx].cellValue;
-          if (cv) return parseCellValue(cv);
-        }
-        return "";
-      };
-
-      const rowData = [];
-      for (let j = 0; j < 12; j++) rowData.push(getCol(j));
-      if (!rowData[0]) continue;
-
-      const expectedDateStr = rowData[3];
-      if (expectedDateStr) {
-        try {
-          if (expectedDateStr < todayStr) continue;
-        } catch (e) {}
+      if (!isAdmin && !isSameSubmitter(order, submitterId, submitterName)) {
+        continue;
+      }
+      if (isAdmin && viewMode === "mine" && !isSameSubmitter(order, submitterId, submitterName)) {
+        continue;
       }
 
-      orders.push({
-        row_index: i + 2,
-        model: rowData[0],
-        tonnage: rowData[1],
-        customer: rowData[2],
-        expected_date: rowData[3],
-        calculated_date: rowData[4],
-        queue_date: rowData[5],
-        submitter: rowData[6],
-        remark: rowData[7],
-        serial_no: rowData[8],
-        last_entry: rowData[9],
-        submitter_id: rowData[10],
-        submit_time: rowData[11]
-      });
+      orders.push(order);
     }
 
     orders.sort((a, b) => {
@@ -454,7 +664,7 @@ async function apiGetOrders(url) {
     return jsonResponse({
       success: true,
       orders: paginated,
-      is_admin: true,
+      is_admin: isAdmin,
       view_mode: viewMode,
       pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) }
     });
@@ -476,15 +686,20 @@ async function apiCreateOrder(request) {
     const rowIndex = data.row_index || 0;
 
     const remark = `${tonnage}${customer}`;
-    const now = new Date();
-    const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-    const submitTime = beijingTime.toISOString().replace('T', ' ').slice(0, 19);
+    const submitTime = getBeijingTimeString();
 
     let writeRowIdx;
     let serialNo;
     if (rowIndex > 0) {
-      writeRowIdx = rowIndex - 1;
-      serialNo = String(rowIndex);
+      const existing = await readOrderByRow(rowIndex);
+      if (!existing) {
+        writeRowIdx = rowIndex - 1;
+        serialNo = String(rowIndex);
+      } else {
+        const emptyRow = await getNextEmptyRow();
+        writeRowIdx = emptyRow - 1;
+        serialNo = String(emptyRow);
+      }
     } else {
       const emptyRow = await getNextEmptyRow();
       writeRowIdx = emptyRow - 1;
@@ -503,6 +718,7 @@ async function apiCreateOrder(request) {
       const updated = result.responses[0]?.updateRangeResponse?.updatedCells || 0;
       if (updated > 0) {
         cache = {};
+        clearOrderCaches();
         return jsonResponse({ success: true, message: "订单创建成功" });
       }
       return jsonResponse({ success: false, error: "写入0个单元格" });
@@ -513,27 +729,111 @@ async function apiCreateOrder(request) {
   }
 }
 
-async function apiDeleteOrder(request) {
+async function apiGetOrder(url, rowIndex) {
   try {
-    const data = await request.json();
-    const rowIndex = data.row_index || 0;
-    if (rowIndex <= 0) {
+    const submitterId = url.searchParams.get("submitter_id") || "";
+    const submitterName = url.searchParams.get("submitter_name") || "";
+    const isAdmin = await isUserAdmin(submitterId);
+    const order = await readOrderByRow(rowIndex);
+    if (!order) {
+      return jsonResponse({ success: false, error: "订单不存在" });
+    }
+    if (!isAdmin && !isSameSubmitter(order, submitterId, submitterName)) {
+      return jsonResponse({ success: false, error: "无权查看他人订单" }, 403);
+    }
+    return jsonResponse({ success: true, order });
+  } catch (e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+async function apiUpdateOrder(request, rowIndex) {
+  try {
+    if (!Number.isInteger(rowIndex) || rowIndex < 2) {
       return jsonResponse({ success: false, error: "无效的行号" });
     }
+    const data = await request.json();
+    const submitterId = data.submitter_id || "";
+    const submitterName = data.submitter || "";
+    const isAdmin = await isUserAdmin(submitterId);
+    const original = await readOrderByRow(rowIndex);
+    if (!original) {
+      return jsonResponse({ success: false, error: "订单不存在" });
+    }
+    if (!isAdmin && !isSameSubmitter(original, submitterId, submitterName)) {
+      return jsonResponse({ success: false, error: "无权修改他人订单" }, 403);
+    }
+    const newTonnage = parseFloat(data.tonnage || "0");
+    const oldTonnage = parseFloat(original.tonnage || "0");
+    if (!isNaN(newTonnage) && !isNaN(oldTonnage) && newTonnage > oldTonnage) {
+      return jsonResponse({ success: false, error: "吨位只能改小不能改大" });
+    }
+
+    const model = data.model || "";
+    const tonnage = data.tonnage || "";
+    const customer = data.customer || "";
+    const expectedDate = data.expected_date || "";
+    const queueDate = data.queue_date || "";
+    const submitter = data.submitter || original.submitter || "未知用户";
+    const remark = `${tonnage}${customer}`;
+    const submitTime = getBeijingTimeString();
+    const [calcDateForWrite] = await calculateDeliveryDate(model, tonnage, expectedDate);
+
+    const resp = await writeOrderRow(
+      rowIndex - 1, model, tonnage, customer, expectedDate,
+      calcDateForWrite, queueDate, submitter, remark, String(rowIndex), submitterId, submitTime
+    );
+    const result = await resp.json();
+    if (result.responses) {
+      cache = {};
+      clearOrderCaches();
+      return jsonResponse({ success: true, message: "订单修改成功" });
+    }
+    return jsonResponse({ success: false, error: JSON.stringify(result) });
+  } catch (e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+async function apiDeleteOrder(request, url, rowIndexFromPath = 0) {
+  try {
+    let data = {};
+    try {
+      data = await request.json();
+    } catch (e) {
+      data = {};
+    }
+    const rowIndex = rowIndexFromPath || data.row_index || 0;
+    const submitterId = url.searchParams.get("submitter_id") || data.submitter_id || request.headers.get("X-Employee-Id") || "";
+    const submitterName = url.searchParams.get("submitter_name") || data.submitter || "";
+    if (!Number.isInteger(rowIndex) || rowIndex < 2) {
+      return jsonResponse({ success: false, error: "无效的行号" });
+    }
+
+    const isAdmin = await isUserAdmin(submitterId);
+    const original = await readOrderByRow(rowIndex);
+    if (!original) {
+      return jsonResponse({ success: false, error: "订单不存在" });
+    }
+    if (!isAdmin && !isSameSubmitter(original, submitterId, submitterName)) {
+      return jsonResponse({ success: false, error: "无权删除他人订单" }, 403);
+    }
+
+    const startIndex = rowIndex - 1;
 
     const body = {
       requests: [{
         deleteDimensionRequest: {
           sheetId: SHEET_ID,
           dimension: "ROW",
-          startIndex: rowIndex,
-          endIndex: rowIndex + 1
+          startIndex,
+          endIndex: startIndex + 1
         }
       }]
     };
 
-    const url = `${BASE_URL}/files/${FILE_ID}/sheets/${SHEET_ID}/batchUpdate`;
-    const resp = await fetch(url, {
+    const batchUrl = `${BASE_URL}/files/${FILE_ID}/batchUpdate`;
+    const resp = await fetch(batchUrl, {
       method: "POST",
       headers: TENCENT_HEADERS,
       body: JSON.stringify(body)
@@ -541,7 +841,8 @@ async function apiDeleteOrder(request) {
 
     if (resp.status === 200) {
       cache = {};
-      return jsonResponse({ success: true, message: "删除成功" });
+      clearOrderCaches();
+      return jsonResponse({ success: true, message: "订单删除成功" });
     }
     return jsonResponse({ success: false, error: `删除失败: ${resp.status}` });
   } catch (e) {
@@ -563,22 +864,8 @@ async function apiCalculateDate(request) {
     if (pendingRowIndex > 0) {
       targetRow = pendingRowIndex;
     } else {
-      const gridData = await readSheetRange(SHEET_ID, "A3:F200");
-      const rows = gridData.rows || [];
-      for (let i = 0; i < rows.length; i++) {
-        const values = rows[i].values || [];
-        const rowData = [];
-        for (const v of values) {
-          const cv = v.cellValue;
-          rowData.push(cv ? parseCellValue(cv) : "");
-        }
-        const aVal = rowData[0] || "";
-        const fVal = rowData[5] || "";
-        if (aVal === model && !fVal.trim()) {
-          targetRow = i + 3;
-          break;
-        }
-      }
+      const pendingRows = await getPendingRowsByModel();
+      targetRow = pendingRows[model] || 0;
     }
 
     return jsonResponse({
@@ -589,6 +876,31 @@ async function apiCalculateDate(request) {
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }
+}
+
+async function getPendingRowsByModel() {
+  const cacheKey = "pendingRowsByModel";
+  if (cache[cacheKey] && (Date.now() / 1000 - cache[cacheKey].time) < PENDING_CACHE_TTL) {
+    return cache[cacheKey].data;
+  }
+
+  const gridData = await readSheetRange(SHEET_ID, "A3:F500");
+  const rows = gridData.rows || [];
+  const pending = {};
+  for (let i = 0; i < rows.length; i++) {
+    const values = rows[i].values || [];
+    const getCol = (idx) => {
+      const cv = values[idx]?.cellValue;
+      return cv ? parseCellValue(cv) : "";
+    };
+    const model = getCol(0);
+    const queueDate = getCol(5);
+    if (model && !queueDate.trim()) {
+      pending[model] = i + 3;
+    }
+  }
+  cache[cacheKey] = { data: pending, time: Date.now() / 1000 };
+  return pending;
 }
 
 async function apiFeedback(request) {
@@ -602,23 +914,102 @@ async function apiFeedback(request) {
 
 async function apiGetAuthUsers() {
   try {
-    // 从腾讯表格读取用户列表（使用主服务的用户表）
-    const gridData = await readSheetRange("s9osf8", "A2:D30");
+    const users = await readUsers();
+    return jsonResponse({
+      success: true,
+      count: users.length,
+      users: users.map(user => ({
+        name: user.name,
+        employee_id: user.employee_id
+      }))
+    });
+  } catch (e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+async function apiAuthLogin(request, accessPassword) {
+  try {
+    const data = await request.json();
+    const employeeId = data.employee_id || "";
+    const password = data.password || "";
+    const users = await readUsers();
+    const user = users.find(u => normalizeUserKey(u.employee_id) === normalizeUserKey(employeeId));
+    if (!user) {
+      return jsonResponse({ success: false, error: "员工号不存在" });
+    }
+    if (user.password !== password) {
+      return jsonResponse({ success: false, error: "密码错误" });
+    }
+    return jsonResponse({
+      success: true,
+      user: {
+        name: user.name,
+        employee_id: user.employee_id
+      },
+      access_password: accessPassword
+    });
+  } catch (e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+async function apiUpdatePassword(request) {
+  try {
+    const data = await request.json();
+    const employeeId = data.employee_id || "";
+    const oldPassword = data.old_password || "";
+    const newPassword = data.new_password || "";
+
+    if (!employeeId || !oldPassword || !newPassword) {
+      return jsonResponse({ success: false, error: "参数不完整" });
+    }
+    if (newPassword.length < 6) {
+      return jsonResponse({ success: false, error: "新密码至少6位" });
+    }
+    if (!/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return jsonResponse({ success: false, error: "密码必须同时包含字母和数字" });
+    }
+
+    const gridData = await readSheetRange(USER_SHEET_ID, "A2:C200");
     const rows = gridData.rows || [];
-    const users = [];
-    for (const row of rows) {
-      const values = row.values || [];
-      if (values.length >= 3) {
-        const name = parseCellValue(values[0].cellValue);
-        const employeeId = parseCellValue(values[1].cellValue);
-        const password = parseCellValue(values[2].cellValue);
-        const isAdmin = parseCellValue(values[3].cellValue) === "是";
-        if (name && employeeId) {
-          users.push({ name, employee_id: employeeId, password, is_admin: isAdmin });
+    let targetRow = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const values = rows[i].values || [];
+      const rowEmployeeId = values[1]?.cellValue ? parseCellValue(values[1].cellValue) : "";
+      const rowPassword = values[2]?.cellValue ? parseCellValue(values[2].cellValue) : "";
+      if (normalizeUserKey(rowEmployeeId) === normalizeUserKey(employeeId)) {
+        if (rowPassword !== oldPassword) {
+          return jsonResponse({ success: false, error: "旧密码错误" });
         }
+        targetRow = i + 2;
+        break;
       }
     }
-    return jsonResponse({ success: true, users });
+
+    if (!targetRow) {
+      return jsonResponse({ success: false, error: "员工号不存在" });
+    }
+
+    const body = {
+      requests: [{
+        updateRangeRequest: {
+          sheetId: USER_SHEET_ID,
+          gridData: {
+            startRow: targetRow - 1,
+            startColumn: 2,
+            rows: [{ values: [{ cellValue: { text: newPassword } }] }]
+          }
+        }
+      }]
+    };
+    const resp = await batchUpdate(body);
+    const result = await resp.json();
+    if (result.responses) {
+      clearUserCaches();
+      return jsonResponse({ success: true, message: "密码修改成功" });
+    }
+    return jsonResponse({ success: false, error: JSON.stringify(result) });
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }

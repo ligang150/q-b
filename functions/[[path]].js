@@ -3,7 +3,7 @@
 const BASE_URL = "https://docs.qq.com/openapi/spreadsheet/v3";
 const FILE_ID = "DRnhDemRIS25mdnFF";
 const SHEET_ID = "000007";
-const MODEL_SHEET_ID = "000002";
+const MODEL_SHEET_ID = "000008";
 const USER_SHEET_ID = "s9osf8";
 
 const TENCENT_HEADERS = {
@@ -626,8 +626,12 @@ async function apiGetModels() {
         }
       }
     }
-    modelsCache = { data: models, time: Date.now() / 1000 };
-    return jsonResponse({ success: true, models });
+    for (const model of Object.keys(MODEL_CONFIG)) {
+      models.push(model);
+    }
+    const uniqueModels = [...new Set(models)];
+    modelsCache = { data: uniqueModels, time: Date.now() / 1000 };
+    return jsonResponse({ success: true, models: uniqueModels });
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }

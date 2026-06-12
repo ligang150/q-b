@@ -327,7 +327,7 @@ export async function onRequest(context) {
   }
 
   // 静态文件请求直接放行（让Pages处理）
-  if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname.startsWith("/static/")) {
+  if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname.startsWith("/css/") || url.pathname.startsWith("/js/")) {
     return await next();
   }
 

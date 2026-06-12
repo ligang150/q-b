@@ -6,7 +6,7 @@ let currentPage = 1;
 let totalPages = 1;
 let isAdmin = false;
 let viewMode = 'mine'; // 'mine' 或 'all'
-const API_BASE = '';
+const API_BASE = ''; // 空字符串表示同源，备用服务部署后无需修改
 const PER_PAGE = 20;
 
 // 从localStorage读取密码、员工ID和用户名

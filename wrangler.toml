@@ -1,0 +1,10 @@
+name = "q-b"
+main = "src/index.js"
+compatibility_date = "2026-06-12"
+
+[vars]
+ACCESS_PASSWORD = "queue2025"
+
+[[kv_namespaces]]
+binding = "ASSETS"
+id = "q-b-assets"

@@ -367,7 +367,7 @@ async function readUsers() {
     return usersCache.data;
   }
 
-  const url = `${BASE_URL}/files/${FILE_ID}/${USER_SHEET_ID}/A2:D200`;
+  const url = `${BASE_URL}/files/${FILE_ID}/${USER_SHEET_ID}/A2:F200`;
   const resp = await fetch(url, {
     headers: TENCENT_HEADERS,
     cf: { cacheTtl: 0, cacheEverything: false }
@@ -385,15 +385,23 @@ async function readUsers() {
     const name = parseCellValue(values[0]?.cellValue || values[0]);
     const employeeId = parseCellValue(values[1]?.cellValue || values[1]);
     const password = parseCellValue(values[2]?.cellValue || values[2]);
-    const adminText = parseCellValue(values[3]?.cellValue || values[3]).trim();
+    const role = parseCellValue(values[3]?.cellValue || values[3]).trim();
+    const department = parseCellValue(values[4]?.cellValue || values[4]).trim();
+    const permissionText = parseCellValue(values[5]?.cellValue || values[5]).trim();
     if (name && employeeId) {
-      const canViewAll = ["管理员", "经理", "是", "全部", "全部排队", "可查看全部", "admin", "Admin", "ADMIN"].includes(adminText);
+      const isAdmin = role === "管理员" || permissionText === "能操作所有数据";
+      const isManager = role === "经理" || permissionText === "能操作本部门所有数据";
+      const accessLevel = isAdmin ? "admin" : (isManager ? "department" : "self");
       users.push({
         name,
         employee_id: employeeId,
         password,
-        is_admin: canViewAll,
-        permission: adminText
+        is_admin: isAdmin,
+        is_manager: isManager,
+        role,
+        department,
+        access_level: accessLevel,
+        permission: permissionText
       });
     }
   }
@@ -405,9 +413,22 @@ async function readUsers() {
 }
 
 async function isUserAdmin(employeeId) {
+  const user = await getUserById(employeeId);
+  return user?.access_level === "admin";
+}
+
+async function getUserById(employeeId) {
+  const currentId = normalizeUserKey(employeeId);
+  if (!currentId) return null;
   const users = await readUsers();
-  const user = users.find(u => normalizeUserKey(u.employee_id) === normalizeUserKey(employeeId));
-  return Boolean(user?.is_admin);
+  return users.find(u => normalizeUserKey(u.employee_id) === currentId) || null;
+}
+
+async function getUserByName(name) {
+  const currentName = String(name || "").trim();
+  if (!currentName) return null;
+  const users = await readUsers();
+  return users.find(u => String(u.name || "").trim() === currentName) || null;
 }
 
 function normalizeUserKey(value) {
@@ -447,6 +468,33 @@ async function resolveSubmitterName(submitterId, submitterName = "") {
   const users = await readUsers();
   const user = users.find(u => normalizeUserKey(u.employee_id) === currentId);
   return String(user?.name || name || "").trim();
+}
+
+async function getOrderSubmitterUser(order) {
+  return await getUserById(order.submitter_id) || await getUserByName(order.submitter);
+}
+
+async function canOperateOrder(order, currentUser, submitterId, submitterName, viewMode = "mine") {
+  const accessLevel = currentUser?.access_level || "self";
+  if (viewMode === "mine" || accessLevel === "self") {
+    return isSameSubmitter(order, submitterId, submitterName);
+  }
+  if (accessLevel === "admin") return true;
+  if (accessLevel === "department") {
+    const currentDept = String(currentUser?.department || "").trim();
+    const orderUser = await getOrderSubmitterUser(order);
+    const orderDept = String(orderUser?.department || "").trim();
+    return Boolean(currentDept && orderDept && currentDept === orderDept);
+  }
+  return isSameSubmitter(order, submitterId, submitterName);
+}
+
+function normalizeViewMode(currentUser, requestedViewMode) {
+  const accessLevel = currentUser?.access_level || "self";
+  if (requestedViewMode === "all" && (accessLevel === "admin" || accessLevel === "department")) {
+    return "all";
+  }
+  return "mine";
 }
 
 async function readOrderByRow(rowIndex) {
@@ -678,9 +726,10 @@ async function apiGetOrders(request, url) {
   try {
     const submitterId = url.searchParams.get("submitter_id") || "";
     let submitterName = url.searchParams.get("submitter_name") || "";
-    const isAdmin = await isUserAdmin(submitterId);
+    const currentUser = await getUserById(submitterId) || {};
+    const isAdmin = currentUser.access_level === "admin";
     const requestedViewMode = url.searchParams.get("view_mode") || "mine";
-    const viewMode = isAdmin ? requestedViewMode : "mine";
+    const viewMode = normalizeViewMode(currentUser, requestedViewMode);
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
     const canUseEdgeCache = !url.searchParams.get("_ts") && url.searchParams.get("refresh") !== "1" && typeof caches !== "undefined";
@@ -702,11 +751,7 @@ async function apiGetOrders(request, url) {
     const orders = [];
 
     for (const order of allOrders) {
-
-      if (!isAdmin && !isSameSubmitter(order, submitterId, submitterName)) {
-        continue;
-      }
-      if (isAdmin && viewMode === "mine" && !isSameSubmitter(order, submitterId, submitterName)) {
+      if (!(await canOperateOrder(order, currentUser, submitterId, submitterName, viewMode))) {
         continue;
       }
 
@@ -730,6 +775,8 @@ async function apiGetOrders(request, url) {
       success: true,
       orders: paginated,
       is_admin: isAdmin,
+      access_level: currentUser.access_level || "self",
+      department: currentUser.department || "",
       view_mode: viewMode,
       pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) }
     };
@@ -812,12 +859,12 @@ async function apiGetOrder(url, rowIndex) {
   try {
     const submitterId = url.searchParams.get("submitter_id") || "";
     const submitterName = url.searchParams.get("submitter_name") || "";
-    const isAdmin = await isUserAdmin(submitterId);
+    const currentUser = await getUserById(submitterId) || {};
     const order = await readOrderByRow(rowIndex);
     if (!order) {
       return jsonResponse({ success: false, error: "订单不存在" });
     }
-    if (!isAdmin && !isSameSubmitter(order, submitterId, submitterName)) {
+    if (!(await canOperateOrder(order, currentUser, submitterId, submitterName, "all"))) {
       return jsonResponse({ success: false, error: "无权查看他人订单" }, 403);
     }
     return jsonResponse({ success: true, order });
@@ -834,12 +881,12 @@ async function apiUpdateOrder(request, rowIndex) {
     const data = await request.json();
     const submitterId = data.submitter_id || "";
     const submitterName = data.submitter || "";
-    const isAdmin = await isUserAdmin(submitterId);
+    const currentUser = await getUserById(submitterId) || {};
     const original = await readOrderByRow(rowIndex);
     if (!original) {
       return jsonResponse({ success: false, error: "订单不存在" });
     }
-    if (!isAdmin && !isSameSubmitter(original, submitterId, submitterName)) {
+    if (!(await canOperateOrder(original, currentUser, submitterId, submitterName, "all"))) {
       return jsonResponse({ success: false, error: "无权修改他人订单" }, 403);
     }
     const newTonnage = parseFloat(data.tonnage || "0");
@@ -889,7 +936,7 @@ async function apiDeleteOrder(request, url, rowIndexFromPath = 0) {
       return jsonResponse({ success: false, error: "无效的行号" });
     }
 
-    const isAdmin = await isUserAdmin(submitterId);
+    const currentUser = await getUserById(submitterId) || {};
     const original = await readOrderByRow(rowIndex);
     if (!original) {
       return jsonResponse({ success: false, error: "订单不存在" });
@@ -898,7 +945,7 @@ async function apiDeleteOrder(request, url, rowIndexFromPath = 0) {
     if (!orderMatchesExpected(original, expectedOrder)) {
       return jsonResponse({ success: false, error: "订单行号已变化，请刷新后重试，未执行删除" });
     }
-    if (!isAdmin && !isSameSubmitter(original, submitterId, submitterName)) {
+    if (!(await canOperateOrder(original, currentUser, submitterId, submitterName, "all"))) {
       return jsonResponse({ success: false, error: "无权删除他人订单" }, 403);
     }
 

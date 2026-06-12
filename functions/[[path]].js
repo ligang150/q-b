@@ -538,7 +538,7 @@ export async function onRequest(context) {
     return await apiGetModels();
   }
   if (url.pathname === "/api/orders" && method === "GET") {
-    return await apiGetOrders(url);
+    return await apiGetOrders(request, url);
   }
   if (url.pathname === "/api/orders" && method === "POST") {
     return await apiCreateOrder(request);
@@ -672,7 +672,7 @@ async function fetchAllOrdersRaw() {
   return orders;
 }
 
-async function apiGetOrders(url) {
+async function apiGetOrders(request, url) {
   try {
     const submitterId = url.searchParams.get("submitter_id") || "";
     let submitterName = url.searchParams.get("submitter_name") || "";
@@ -680,6 +680,15 @@ async function apiGetOrders(url) {
     const viewMode = url.searchParams.get("view_mode") || (isAdmin ? "all" : "mine");
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
+    const canUseEdgeCache = !url.searchParams.get("_ts") && url.searchParams.get("refresh") !== "1" && typeof caches !== "undefined";
+    const edgeCacheKey = new Request(url.toString(), { method: "GET" });
+
+    if (canUseEdgeCache) {
+      const cached = await caches.default.match(edgeCacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
 
     if (url.searchParams.get("_ts") || url.searchParams.get("refresh") === "1") {
       clearOrderCaches();
@@ -714,13 +723,27 @@ async function apiGetOrders(url) {
     const startIdx = (page - 1) * perPage;
     const paginated = orders.slice(startIdx, startIdx + perPage);
 
-    return jsonResponse({
+    const payload = {
       success: true,
       orders: paginated,
       is_admin: isAdmin,
       view_mode: viewMode,
       pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) }
-    });
+    };
+
+    if (canUseEdgeCache) {
+      const response = new Response(JSON.stringify(payload), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=30"
+        }
+      });
+      await caches.default.put(edgeCacheKey, response.clone());
+      return response;
+    }
+
+    return jsonResponse(payload);
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }

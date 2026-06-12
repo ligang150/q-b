@@ -311,7 +311,7 @@ function jsonResponse(data, status = 200) {
 }
 
 export async function onRequest(context) {
-  const { request, env } = context;
+  const { request, env, next } = context;
   const url = new URL(request.url);
   const method = request.method;
 
@@ -324,6 +324,11 @@ export async function onRequest(context) {
         "Access-Control-Allow-Headers": "Content-Type, X-Access-Password"
       }
     });
+  }
+
+  // 静态文件请求直接放行（让Pages处理）
+  if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname.startsWith("/static/")) {
+    return await next();
   }
 
   // API认证

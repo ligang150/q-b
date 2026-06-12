@@ -333,7 +333,7 @@ export async function onRequest(context) {
 
   // API认证
   const auth = request.headers.get("X-Access-Password") || "";
-  if (auth !== env.ACCESS_PASSWORD) {
+  if (auth !== "queue2025") {
     return jsonResponse({ success: false, error: "未授权" }, 401);
   }
 

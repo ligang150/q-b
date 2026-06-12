@@ -732,6 +732,9 @@ async function apiGetOrders(request, url) {
     const viewMode = normalizeViewMode(currentUser, requestedViewMode);
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
+    const modelFilter = (url.searchParams.get("model_filter") || "").trim();
+    const customerFilter = (url.searchParams.get("customer_filter") || "").trim().toLowerCase();
+    const sortType = (url.searchParams.get("sort") || "").trim();
     const canUseEdgeCache = !url.searchParams.get("_ts") && url.searchParams.get("refresh") !== "1" && typeof caches !== "undefined";
     const edgeCacheKey = new Request(url.toString(), { method: "GET" });
 
@@ -758,7 +761,17 @@ async function apiGetOrders(request, url) {
       orders.push(order);
     }
 
-    orders.sort((a, b) => {
+    let filteredOrders = orders;
+    if (modelFilter) {
+      filteredOrders = filteredOrders.filter(order => (order.model || "") === modelFilter);
+    }
+    if (customerFilter) {
+      filteredOrders = filteredOrders.filter(order => (order.customer || "").toLowerCase().includes(customerFilter));
+    }
+
+    filteredOrders.sort((a, b) => {
+      if (sortType === "model") return (a.model || "").localeCompare(b.model || "");
+      if (sortType === "tonnage") return parseFloat(a.tonnage || "0") - parseFloat(b.tonnage || "0");
       const qa = a.queue_date || "";
       const qb = b.queue_date || "";
       if (qa && qb) return qa.localeCompare(qb);
@@ -767,9 +780,9 @@ async function apiGetOrders(request, url) {
       return 0;
     });
 
-    const total = orders.length;
+    const total = filteredOrders.length;
     const startIdx = (page - 1) * perPage;
-    const paginated = orders.slice(startIdx, startIdx + perPage);
+    const paginated = filteredOrders.slice(startIdx, startIdx + perPage);
 
     const payload = {
       success: true,

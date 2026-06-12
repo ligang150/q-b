@@ -8,7 +8,7 @@
 </head>
 <body>
     <div class="container">
-        <header>
+        <header class="header">
             <h1>销售排队系统</h1>
             <div class="user-info">
                 <span id="userName">未登录</span>
@@ -17,7 +17,7 @@
             </div>
         </header>
 
-        <nav class="tabs">
+        <nav class="nav-tabs">
             <button class="tab-btn active" onclick="showTab('create')">订单排队</button>
             <button class="tab-btn" onclick="showTab('list')">排队明细</button>
             <button class="tab-btn" onclick="showTab('feedback')">问题反馈</button>
@@ -52,8 +52,8 @@
                     <input type="date" id="queueDate" required>
                 </div>
                 <div class="form-actions">
-                    <button type="submit">提交排队</button>
-                    <button type="button" onclick="clearOrderForm()">重置</button>
+                    <button type="submit" class="btn-submit">提交排队</button>
+                    <button type="button" class="btn-reset" onclick="clearOrderForm()">重置</button>
                 </div>
             </form>
         </div>
@@ -84,20 +84,22 @@
                     <textarea id="feedbackContent" rows="5" required></textarea>
                 </div>
                 <div class="form-actions">
-                    <button type="submit">提交反馈</button>
+                    <button type="submit" class="btn-submit">提交反馈</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <div id="authOverlay" class="overlay" style="display:none">
+    <div id="authOverlay" class="auth-overlay" style="display:none">
         <div class="auth-box">
             <h2>需要授权访问</h2>
-            <select id="authUser">
-                <option value="">请选择员工</option>
-            </select>
-            <input type="password" id="authPassword" placeholder="请输入密码">
-            <button onclick="doAuth()">登 录</button>
+            <div class="auth-form">
+                <select id="authUser">
+                    <option value="">请选择员工</option>
+                </select>
+                <input type="password" id="authPassword" placeholder="请输入密码">
+                <button onclick="doAuth()">登 录</button>
+            </div>
         </div>
     </div>
 

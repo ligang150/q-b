@@ -476,7 +476,9 @@ async function apiCreateOrder(request) {
     const rowIndex = data.row_index || 0;
 
     const remark = `${tonnage}${customer}`;
-    const submitTime = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const now = new Date();
+    const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const submitTime = beijingTime.toISOString().replace('T', ' ').slice(0, 19);
 
     let writeRowIdx;
     let serialNo;

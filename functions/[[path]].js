@@ -387,7 +387,7 @@ async function readUsers() {
     const password = parseCellValue(values[2]?.cellValue || values[2]);
     const adminText = parseCellValue(values[3]?.cellValue || values[3]).trim();
     if (name && employeeId) {
-      const canViewAll = ["管理员", "是", "全部", "全部排队", "可查看全部", "admin", "Admin", "ADMIN"].includes(adminText);
+      const canViewAll = ["管理员", "经理", "是", "全部", "全部排队", "可查看全部", "admin", "Admin", "ADMIN"].includes(adminText);
       users.push({
         name,
         employee_id: employeeId,

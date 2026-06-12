@@ -591,9 +591,19 @@ async function fetchAllOrdersRaw() {
   const orders = [];
   const todayStr = new Date().toISOString().split('T')[0];
 
+  const ranges = [];
   for (let start = 2; start <= 2000; start += 200) {
-    const end = Math.min(start + 199, 2000);
-    const gridData = await readSheetRange(SHEET_ID, `A${start}:L${end}`);
+    ranges.push({ start, end: Math.min(start + 199, 2000) });
+  }
+
+  const batches = await Promise.all(
+    ranges.map(async ({ start, end }) => ({
+      start,
+      gridData: await readSheetRange(SHEET_ID, `A${start}:L${end}`)
+    }))
+  );
+
+  for (const { start, gridData } of batches) {
     const rows = gridData.rows || [];
 
     for (let i = 0; i < rows.length; i++) {
@@ -643,7 +653,7 @@ async function apiGetOrders(url) {
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
 
-    if (url.searchParams.get("_ts") || url.searchParams.get("refresh") === "1" || viewMode === "mine" || !isAdmin) {
+    if (url.searchParams.get("_ts") || url.searchParams.get("refresh") === "1") {
       clearOrderCaches();
     }
 

@@ -385,13 +385,15 @@ async function readUsers() {
     const name = parseCellValue(values[0]?.cellValue || values[0]);
     const employeeId = parseCellValue(values[1]?.cellValue || values[1]);
     const password = parseCellValue(values[2]?.cellValue || values[2]);
-    const adminText = parseCellValue(values[3]?.cellValue || values[3]);
+    const adminText = parseCellValue(values[3]?.cellValue || values[3]).trim();
     if (name && employeeId) {
+      const canViewAll = ["管理员", "是", "全部", "全部排队", "可查看全部", "admin", "Admin", "ADMIN"].includes(adminText);
       users.push({
         name,
         employee_id: employeeId,
         password,
-        is_admin: adminText === "管理员" || adminText === "是"
+        is_admin: canViewAll,
+        permission: adminText
       });
     }
   }
@@ -677,7 +679,8 @@ async function apiGetOrders(request, url) {
     const submitterId = url.searchParams.get("submitter_id") || "";
     let submitterName = url.searchParams.get("submitter_name") || "";
     const isAdmin = await isUserAdmin(submitterId);
-    const viewMode = url.searchParams.get("view_mode") || (isAdmin ? "all" : "mine");
+    const requestedViewMode = url.searchParams.get("view_mode") || "mine";
+    const viewMode = isAdmin ? requestedViewMode : "mine";
     const page = parseInt(url.searchParams.get("page") || "1");
     const perPage = parseInt(url.searchParams.get("per_page") || "20");
     const canUseEdgeCache = !url.searchParams.get("_ts") && url.searchParams.get("refresh") !== "1" && typeof caches !== "undefined";

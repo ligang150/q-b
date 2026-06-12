@@ -356,6 +356,9 @@ export async function onRequest(context) {
   if (url.pathname === "/api/feedback" && method === "POST") {
     return await apiFeedback(request);
   }
+  if (url.pathname === "/auth/users" && method === "GET") {
+    return await apiGetAuthUsers();
+  }
 
   return jsonResponse({ success: false, error: "Not found" }, 404);
 }
@@ -590,6 +593,29 @@ async function apiFeedback(request) {
   try {
     const data = await request.json();
     return jsonResponse({ success: true, message: "反馈已提交" });
+  } catch (e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+async function apiGetAuthUsers() {
+  try {
+    // 从腾讯表格读取用户列表（使用主服务的用户表）
+    const gridData = await readSheetRange("00000b", "A2:C100");
+    const rows = gridData.rows || [];
+    const users = [];
+    for (const row of rows) {
+      const values = row.values || [];
+      if (values.length >= 3) {
+        const name = parseCellValue(values[0].cellValue);
+        const employeeId = parseCellValue(values[1].cellValue);
+        const password = parseCellValue(values[2].cellValue);
+        if (name && employeeId) {
+          users.push({ name, employee_id: employeeId, password });
+        }
+      }
+    }
+    return jsonResponse({ success: true, users });
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }

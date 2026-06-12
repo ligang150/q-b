@@ -1,5 +1,4 @@
-// 销售排队系统 - Cloudflare Workers 备用服务
-// 完整功能：读取、写入、计算可发货日期
+// Cloudflare Pages Function - 销售排队系统备用服务
 
 const BASE_URL = "https://docs.qq.com/openapi/spreadsheet/v3";
 const FILE_ID = "DRnhDemRIS25mdnFF";
@@ -13,7 +12,6 @@ const TENCENT_HEADERS = {
   "Client-Id": "da815d1227294457b43413bdc16e3e90"
 };
 
-// 型号配置（从calc_engine.py移植）
 const MODEL_CONFIG = {
   "F5631":  { sheetId: "000005", startRow: 6,  capCol: "J",  limitCell: "M1",  rowCount: 179 },
   "F3500":  { sheetId: "000005", startRow: 6,  capCol: "K",  limitCell: "N1",  rowCount: 179 },
@@ -43,7 +41,6 @@ const MODEL_CONFIG = {
   "8001A":  { sheetId: "000009", startRow: 3,  capCol: "Q",  limitCell: "O1",  rowCount: 241 },
 };
 
-// 缓存
 let cache = {};
 const CACHE_TTL = 60;
 
@@ -306,75 +303,56 @@ async function writeOrderRow(rowIndex0Based, model, tonnage, customer, expectedD
   return await batchUpdate(body);
 }
 
-// 主入口
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const method = request.method;
-
-    // CORS
-    if (method === "OPTIONS") {
-      return new Response("", {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS, DELETE",
-          "Access-Control-Allow-Headers": "Content-Type, X-Access-Password"
-        }
-      });
-    }
-
-    // 静态文件服务
-    if (url.pathname === "/" || url.pathname === "/index.html") {
-      const html = await env.ASSETS.get("index.html");
-      if (html) {
-        return new Response(html.body, { headers: { "Content-Type": "text/html" } });
-      }
-      return new Response("Loading...", { headers: { "Content-Type": "text/html" } });
-    }
-    if (url.pathname.startsWith("/static/")) {
-      const asset = await env.ASSETS.get(url.pathname.slice(1));
-      if (asset) {
-        const contentType = url.pathname.endsWith(".css") ? "text/css" : "application/javascript";
-        return new Response(asset.body, { headers: { "Content-Type": contentType } });
-      }
-      return new Response("Not found", { status: 404 });
-    }
-
-    // API认证
-    const auth = request.headers.get("X-Access-Password") || "";
-    if (auth !== env.ACCESS_PASSWORD) {
-      return jsonResponse({ success: false, error: "未授权" }, 401);
-    }
-
-    // API路由
-    if (url.pathname === "/api/models" && method === "GET") {
-      return await apiGetModels();
-    }
-    if (url.pathname === "/api/orders" && method === "GET") {
-      return await apiGetOrders(url);
-    }
-    if (url.pathname === "/api/orders" && method === "POST") {
-      return await apiCreateOrder(request);
-    }
-    if (url.pathname === "/api/orders" && method === "DELETE") {
-      return await apiDeleteOrder(request);
-    }
-    if (url.pathname === "/api/calculate-date" && method === "POST") {
-      return await apiCalculateDate(request);
-    }
-    if (url.pathname === "/api/feedback" && method === "POST") {
-      return await apiFeedback(request);
-    }
-
-    return jsonResponse({ success: false, error: "Not found" }, 404);
-  }
-};
-
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
   });
+}
+
+export async function onRequest(context) {
+  const { request, env } = context;
+  const url = new URL(request.url);
+  const method = request.method;
+
+  // CORS
+  if (method === "OPTIONS") {
+    return new Response("", {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS, DELETE",
+        "Access-Control-Allow-Headers": "Content-Type, X-Access-Password"
+      }
+    });
+  }
+
+  // API认证
+  const auth = request.headers.get("X-Access-Password") || "";
+  if (auth !== env.ACCESS_PASSWORD) {
+    return jsonResponse({ success: false, error: "未授权" }, 401);
+  }
+
+  // API路由
+  if (url.pathname === "/api/models" && method === "GET") {
+    return await apiGetModels();
+  }
+  if (url.pathname === "/api/orders" && method === "GET") {
+    return await apiGetOrders(url);
+  }
+  if (url.pathname === "/api/orders" && method === "POST") {
+    return await apiCreateOrder(request);
+  }
+  if (url.pathname === "/api/orders" && method === "DELETE") {
+    return await apiDeleteOrder(request);
+  }
+  if (url.pathname === "/api/calculate-date" && method === "POST") {
+    return await apiCalculateDate(request);
+  }
+  if (url.pathname === "/api/feedback" && method === "POST") {
+    return await apiFeedback(request);
+  }
+
+  return jsonResponse({ success: false, error: "Not found" }, 404);
 }
 
 async function apiGetModels() {
@@ -428,7 +406,6 @@ async function apiGetOrders(url) {
       for (let j = 0; j < 12; j++) rowData.push(getCol(j));
       if (!rowData[0]) continue;
 
-      // 期望发货日期过滤
       const expectedDateStr = rowData[3];
       if (expectedDateStr) {
         try {
@@ -453,7 +430,6 @@ async function apiGetOrders(url) {
       });
     }
 
-    // 默认按排队日期升序
     orders.sort((a, b) => {
       const qa = a.queue_date || "";
       const qb = b.queue_date || "";
@@ -516,7 +492,6 @@ async function apiCreateOrder(request) {
     if (result.responses) {
       const updated = result.responses[0]?.updateRangeResponse?.updatedCells || 0;
       if (updated > 0) {
-        // 清除缓存
         cache = {};
         return jsonResponse({ success: true, message: "订单创建成功" });
       }
@@ -578,7 +553,6 @@ async function apiCalculateDate(request) {
     if (pendingRowIndex > 0) {
       targetRow = pendingRowIndex;
     } else {
-      // 查找待处理行
       const gridData = await readSheetRange(SHEET_ID, "A3:F200");
       const rows = gridData.rows || [];
       for (let i = 0; i < rows.length; i++) {
@@ -610,12 +584,6 @@ async function apiCalculateDate(request) {
 async function apiFeedback(request) {
   try {
     const data = await request.json();
-    const content = data.content || "";
-    const submitter = data.submitter || "未知用户";
-    const submitTime = new Date().toISOString().replace('T', ' ').slice(0, 19);
-
-    // 写入反馈到腾讯表格（使用单独的工作表或追加到主表末尾）
-    // 简化：返回成功
     return jsonResponse({ success: true, message: "反馈已提交" });
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });

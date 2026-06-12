@@ -601,7 +601,7 @@ async function apiFeedback(request) {
 async function apiGetAuthUsers() {
   try {
     // 从腾讯表格读取用户列表（使用主服务的用户表）
-    const gridData = await readSheetRange("00000b", "A2:C100");
+    const gridData = await readSheetRange("s9osf8", "A2:D30");
     const rows = gridData.rows || [];
     const users = [];
     for (const row of rows) {
@@ -610,8 +610,9 @@ async function apiGetAuthUsers() {
         const name = parseCellValue(values[0].cellValue);
         const employeeId = parseCellValue(values[1].cellValue);
         const password = parseCellValue(values[2].cellValue);
+        const isAdmin = parseCellValue(values[3].cellValue) === "是";
         if (name && employeeId) {
-          users.push({ name, employee_id: employeeId, password });
+          users.push({ name, employee_id: employeeId, password, is_admin: isAdmin });
         }
       }
     }

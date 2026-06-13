@@ -349,17 +349,17 @@ async function writeOrderRow(rowIndex0Based, model, tonnage, customer, expectedD
   return await batchUpdate(body);
 }
 
-function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-      "Pragma": "no-cache",
-      "Expires": "0"
-    }
-  });
+function jsonResponse(data, status = 200, cacheControl = "no-store, no-cache, must-revalidate, max-age=0") {
+  const headers = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": cacheControl
+  };
+  if (cacheControl.includes("no-store")) {
+    headers["Pragma"] = "no-cache";
+    headers["Expires"] = "0";
+  }
+  return new Response(JSON.stringify(data), { status, headers });
 }
 
 async function readUsers() {
@@ -611,7 +611,7 @@ export async function onRequest(context) {
 async function apiGetModels() {
   try {
     if (isCacheValid(modelsCache, MODEL_CACHE_TTL)) {
-      return jsonResponse({ success: true, models: modelsCache.data });
+      return jsonResponse({ success: true, models: modelsCache.data }, 200, "private, max-age=300");
     }
 
     const gridData = await readSheetRange(MODEL_SHEET_ID, "A1:A100");
@@ -631,7 +631,7 @@ async function apiGetModels() {
     }
     const uniqueModels = [...new Set(models)];
     modelsCache = { data: uniqueModels, time: Date.now() / 1000 };
-    return jsonResponse({ success: true, models: uniqueModels });
+    return jsonResponse({ success: true, models: uniqueModels }, 200, "private, max-age=300");
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }
@@ -1071,7 +1071,7 @@ async function apiGetAuthUsers() {
         name: user.name,
         employee_id: user.employee_id
       }))
-    });
+    }, 200, "private, max-age=120");
   } catch (e) {
     return jsonResponse({ success: false, error: e.message });
   }
